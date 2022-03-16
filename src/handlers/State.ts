@@ -34,15 +34,9 @@ class State extends Listener {
      * @returns Connection state on success or null on error
      */
     public async get() {
-        try {
-            const result = await this.redis.json.get(this.key())
+        const result = await super.get()
 
-            return <Partial<ConnectionState>>result
-        } catch (err) {
-            this.logger?.error({ err }, 'Failed to get connection state')
-
-            return null
-        }
+        return <Partial<ConnectionState> | null>result
     }
 
     /**

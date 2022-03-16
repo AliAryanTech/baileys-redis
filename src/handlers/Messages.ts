@@ -3,7 +3,9 @@ import {
     BaileysEventEmitter,
     jidNormalizedUser,
     MessageUpdateType,
+    MessageUserReceiptUpdate,
     toNumber,
+    updateMessageWithReceipt,
     WAMessage,
     WAMessageKey,
 } from '@adiwajshing/baileys'
@@ -12,12 +14,19 @@ import { BaileysEvent, Listener, Logger, RedisClient } from './../types'
 
 class Messages extends Listener {
     protected keyPrefix: string = 'baileys.messages'
-    protected events: BaileysEvent[] = ['messages.set', 'messages.upsert', 'messages.update', 'messages.delete']
+    protected events: BaileysEvent[] = [
+        'messages.set',
+        'messages.upsert',
+        'messages.update',
+        'messages.delete',
+        'message-receipt.update',
+    ]
 
     private hMessagesSet
     private hMessagesUpsert
     private hMessagesUpdate
     private hMessagesDelete
+    private hMessageReceiptUpdate
 
     constructor(
         storage: RedisStorage,
@@ -32,6 +41,7 @@ class Messages extends Listener {
         this.hMessagesUpsert = this.upsert.bind(this)
         this.hMessagesUpdate = this.update.bind(this)
         this.hMessagesDelete = this.del.bind(this)
+        this.hMessageReceiptUpdate = this.messageReceiptUpdate.bind(this)
 
         this.registerAllListeners()
     }
@@ -51,6 +61,9 @@ class Messages extends Listener {
                 break
             case 'messages.delete':
                 handler = this.hMessagesDelete
+                break
+            case 'message-receipt.update':
+                handler = this.hMessageReceiptUpdate
                 break
             default:
                 return
@@ -77,46 +90,40 @@ class Messages extends Listener {
     }
 
     /**
-     * Get entire messages or all messages by specific jid
+     * Get entire messages or all messages by specific id
      *
-     * @param jid Message jid (Optional)
-     * @returns Entire messages or all messages for specific jid or null on error
+     * @param id Message jid (Optional)
+     * @returns Entire messages or all messages for specific id or null on error
      */
-    public async get(jid: string = '') {
-        try {
-            const result = <unknown>await this.redis.json.get(this.key(), jid ? { path: [`.['${jid}']`] } : undefined)
+    public async get(id: string = '') {
+        const result = await super.get(id)
 
-            return <WAMessage[] | { [_: string]: WAMessage[] }>result
-        } catch (err) {
-            this.logger?.error({ err }, 'Failed to get contacts')
-
-            return null
-        }
+        return <{ [_: string]: WAMessage[] } | WAMessage[] | null>result
     }
 
     /**
      * Set messages
      */
-    private async set({ messages: newMessages, isLatest }: { messages: WAMessage[]; isLatest: boolean }) {
+    private async set({ messages, isLatest }: { messages: WAMessage[]; isLatest: boolean }) {
         if (isLatest) {
             this.clear()
         }
 
-        const keys = newMessages.map((message) => {
-            return message.key.remoteJid!
+        const keys = messages.map((m) => {
+            return m.key.remoteJid!
         })
 
         const oldKeys = <string[]>await this.redis.json.objKeys(this.key()) ?? []
-        const missingKeys = keys.filter((key) => {
-            return !oldKeys.includes(key)
+        const missingKeys = keys.filter((k) => {
+            return !oldKeys.includes(k)
         })
 
         await this.initArrays(missingKeys)
 
         const chain = this.redis.multi()
 
-        for (const message of newMessages) {
-            chain.json.arrInsert(this.key(), `.['${message.key.remoteJid!}']`, 0, <RedisJSON>(<unknown>message))
+        for (const message of messages) {
+            chain.json.arrInsert(this.key(), `.['${message.key.remoteJid}']`, 0, <RedisJSON>(<unknown>message))
         }
 
         try {
@@ -129,41 +136,42 @@ class Messages extends Listener {
     /**
      * Upsert messages
      */
-    private async upsert({ messages: newMessages, type }: { messages: WAMessage[]; type: MessageUpdateType }) {
-        if (type !== 'notify') {
-            return
-        }
+    private async upsert({ messages, type }: { messages: WAMessage[]; type: MessageUpdateType }) {
+        switch (type) {
+            case 'append':
+            case 'notify':
+                let chatIds: string[] = []
 
-        let chatIds: string[] = []
+                try {
+                    chatIds = <string[]>await this.redis.json.objKeys(this.storage.chats()!.key()) ?? []
+                } catch (err) {
+                    this.logger?.error({ err }, 'Failed to get chat ids')
+                }
 
-        try {
-            chatIds = <string[]>await this.redis.json.objKeys(this.storage.chats()!.key()) ?? []
-        } catch (err) {
-            this.logger?.error({ err }, 'Failed to get chat ids')
-        }
+                const chain = this.redis.multi()
 
-        const chain = this.redis.multi()
+                for (const message of messages) {
+                    const jid = jidNormalizedUser(message.key.remoteJid!)
 
-        for (const message of newMessages) {
-            const jid = jidNormalizedUser(message.key.remoteJid!)
+                    chain.json.arrAppend(this.key(), `.['${message.key.remoteJid}']`, <RedisJSON>(<unknown>message))
 
-            chain.json.arrAppend(this.key(), `.['${message.key.remoteJid!}']`, <RedisJSON>(<unknown>message))
+                    if (type === 'notify' && !chatIds.includes(jid)) {
+                        this.ev.emit('chats.upsert', [
+                            {
+                                id: jid,
+                                conversationTimestamp: toNumber(message.messageTimestamp!),
+                                unreadCount: 1,
+                            },
+                        ])
+                    }
+                }
 
-            if (!chatIds.includes(jid)) {
-                this.ev.emit('chats.upsert', [
-                    {
-                        id: jid,
-                        conversationTimestamp: toNumber(message.messageTimestamp!),
-                        unreadCount: 1,
-                    },
-                ])
-            }
-        }
-
-        try {
-            await chain.exec()
-        } catch (err) {
-            this.logger?.error({ err }, 'Failed to upsert messages')
+                try {
+                    await chain.exec()
+                } catch (err) {
+                    this.logger?.error({ err }, 'Failed to upsert messages')
+                }
+                break
         }
     }
 
@@ -177,7 +185,7 @@ class Messages extends Listener {
 
         const chain = this.redis.multi()
 
-        for (const { update, key: k } of updates) {
+        for (const { key: k, update } of updates) {
             const messages = <WAMessage[]>await this.get(k.remoteJid!) ?? []
 
             if (messages.length <= 0) {
@@ -186,11 +194,11 @@ class Messages extends Listener {
                 continue
             }
 
-            const message = messages.filter((m) => {
+            const message = messages.find((m) => {
                 return m.key.id === k.id
             })
 
-            if (message.length <= 0) {
+            if (!message) {
                 notExists(update)
 
                 continue
@@ -198,8 +206,8 @@ class Messages extends Listener {
 
             chain.json.set(
                 this.key(),
-                `.[${messages.indexOf(message[0])}]`,
-                <RedisJSON>(<unknown>Object.assign(message[0], update))
+                `.['${k.remoteJid}'].[${messages.indexOf(message)}]`,
+                <RedisJSON>(<unknown>Object.assign(message, update))
             )
         }
 
@@ -231,18 +239,41 @@ class Messages extends Listener {
             return
         }
 
-        const message = messages.filter((m) => {
+        const message = messages.find((m) => {
             return m.key.id === item.keys[0].id
         })
 
-        if (message.length <= 0) {
+        if (!message) {
             return
         }
 
         try {
-            await this.redis.json.del(this.key(), `.['${jid}'].[${messages.indexOf(message[0])}]`)
+            await this.redis.json.del(this.key(), `.['${jid}'].[${messages.indexOf(message)}]`)
         } catch (err) {
             this.logger?.error({ err }, 'Failed to delete message')
+        }
+    }
+
+    /**
+     * Update message receipt
+     */
+    private async messageReceiptUpdate(updates: MessageUserReceiptUpdate[]) {
+        for (const { key: k, receipt } of updates) {
+            const messages = <WAMessage[]>await this.get(k.remoteJid!) ?? []
+
+            if (messages.length <= 0) {
+                continue
+            }
+
+            const message = messages.find((m) => {
+                return m.key.id === k.id
+            })
+
+            if (!message) {
+                continue
+            }
+
+            updateMessageWithReceipt(message, receipt)
         }
     }
 }

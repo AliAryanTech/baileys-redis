@@ -35,7 +35,25 @@ abstract class Handler {
     }
 
     /**
-     * Clear redis json data
+     * Get entire data or all data by specific id
+     *
+     * @param id Data id (Optional)
+     * @returns Entire data or all data by specific id or null on error
+     */
+    public async get(id: string = '') {
+        try {
+            const result = await this.redis.json.get(this.key(), id ? { path: [`.['${id}']`] } : undefined)
+
+            return <unknown>result
+        } catch (err) {
+            this.logger?.error({ err }, `Failed to get "${this.key()}" data`)
+
+            return null
+        }
+    }
+
+    /**
+     * Clear redis json data and replace with empty object
      */
     public async clear() {
         try {

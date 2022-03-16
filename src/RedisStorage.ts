@@ -1,13 +1,15 @@
 import type { BaileysEventEmitter } from '@adiwajshing/baileys'
 import type { BaileysEvent, Logger, RedisClient } from './types'
-import { Chats, Contacts, Messages, State } from './handlers'
+import { Chats, Contacts, GroupsMetadata, Messages, Presence, State } from './handlers'
 
 class RedisStorage {
     private isRegistered: boolean = false
 
     private iChats: Chats | null = null
     private iContacts: Contacts | null = null
+    private iGroupsMetadata: GroupsMetadata | null = null
     private iMessages: Messages | null = null
+    private iPresence: Presence | null = null
     private iState: State | null = null
 
     constructor(
@@ -29,7 +31,9 @@ class RedisStorage {
 
         this.iChats = new Chats(this, this.redis, this.ev, this.logger, ignoreEvents)
         this.iContacts = new Contacts(this, this.redis, this.ev, this.logger, ignoreEvents)
+        this.iGroupsMetadata = new GroupsMetadata(this, this.redis, this.ev, this.logger, ignoreEvents)
         this.iMessages = new Messages(this, this.redis, this.ev, this.logger, ignoreEvents)
+        this.iPresence = new Presence(this, this.redis, this.ev, this.logger, ignoreEvents)
         this.iState = new State(this, this.redis, this.ev, this.logger, ignoreEvents)
 
         this.isRegistered = true
@@ -41,7 +45,9 @@ class RedisStorage {
     private removeAllListeners() {
         this.iChats!.removeAllListeners()
         this.iContacts!.removeAllListeners()
+        this.iGroupsMetadata!.removeAllListeners()
         this.iMessages!.removeAllListeners()
+        this.iPresence!.removeAllListeners()
         this.iState!.removeAllListeners()
     }
 
@@ -51,7 +57,9 @@ class RedisStorage {
     private dispose() {
         this.iChats = null
         this.iContacts = null
+        this.iGroupsMetadata = null
         this.iMessages = null
+        this.iPresence = null
         this.iState = null
     }
 
@@ -88,12 +96,30 @@ class RedisStorage {
     }
 
     /**
+     * Get groups metadata handler instance
+     *
+     * @returns Groups metadata handler instance if registered or else return null
+     */
+    public groupsMetadata() {
+        return this.iGroupsMetadata
+    }
+
+    /**
      * Get messages handler instance
      *
      * @returns Messages handler instance if registered or else return null
      */
     public messages() {
         return this.iMessages
+    }
+
+    /**
+     * Get presence handler instance
+     *
+     * @returns Presence handler instance if registered or else return null
+     */
+    public presence() {
+        return this.iPresence
     }
 
     /**

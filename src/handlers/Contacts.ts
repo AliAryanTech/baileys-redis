@@ -49,27 +49,22 @@ class Contacts extends Listener {
     }
 
     /**
-     * Get contacts
+     * Get all contacts details or contact details by specific id
      *
-     * @returns Contacts on success or null on error
+     * @param id Contact jid (Optional)
+     * @returns Contact(s) details on success or null on error
      */
-    public async get() {
-        try {
-            const result = <unknown>await this.redis.json.get(this.key())
+    public async get(id: string = '') {
+        const result = await super.get(id)
 
-            return <{ [_: string]: Contact }>result
-        } catch (err) {
-            this.logger?.error({ err }, 'Failed to get contacts')
-
-            return null
-        }
+        return <{ [_: string]: Contact } | Contact | null>result
     }
 
     /**
      * Set contacts
      */
-    private async set({ contacts: newContacts }: { contacts: Contact[] }) {
-        await this.upsert(newContacts)
+    private async set({ contacts }: { contacts: Contact[] }) {
+        await this.upsert(contacts)
     }
 
     /**
@@ -77,9 +72,13 @@ class Contacts extends Listener {
      */
     private async upsert(contacts: Contact[]) {
         const chain = this.redis.multi()
-        const oldContacts = (await this.get()) ?? {}
+
+        const oldContacts = <{ [_: string]: Contact }>await this.get() ?? {}
+        const deletedContacts = new Set(Object.keys(oldContacts))
 
         for (const contact of contacts) {
+            deletedContacts.delete(contact.id)
+
             if (isGroup(contact.id)) {
                 continue
             }
@@ -91,10 +90,17 @@ class Contacts extends Listener {
             )
         }
 
+        for (const id of deletedContacts) {
+            chain.json.del(this.key(), `.['${id}']`)
+        }
+
         try {
             await chain.exec()
 
-            this.logger?.debug({ affectedContacts: contacts.length }, 'Synced contacts')
+            this.logger?.debug(
+                { deletedContacts: deletedContacts.size, affectedContacts: contacts.length },
+                'Synced contacts'
+            )
         } catch (err) {
             this.logger?.error({ err }, 'Failed to set contacts')
         }
@@ -105,7 +111,7 @@ class Contacts extends Listener {
      */
     private async update(updates: Partial<Contact>[]) {
         const chain = this.redis.multi()
-        const oldContacts = (await this.get()) ?? {}
+        const oldContacts = <{ [_: string]: Contact }>await this.get() ?? {}
 
         for (const update of updates) {
             if (!(update.id! in oldContacts)) {
@@ -116,7 +122,7 @@ class Contacts extends Listener {
 
             chain.json.set(
                 this.key(),
-                `.['${update.id!}']`,
+                `.['${update.id}']`,
                 <RedisJSON>(<unknown>Object.assign(oldContacts[update.id!], update))
             )
         }

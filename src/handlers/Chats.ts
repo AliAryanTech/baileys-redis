@@ -53,41 +53,36 @@ class Chats extends Listener {
     }
 
     /**
-     * Get chats
+     * Get all chats details or chat details by specific id
      *
-     * @returns Chats on success or null on error
+     * @param id Chat jid (Optional)
+     * @returns Chat(s) details on success or null on error
      */
-    public async get() {
-        try {
-            const result = await this.redis.json.get(this.key())
+    public async get(id: string = '') {
+        const result = await super.get(id)
 
-            return <{ [_: string]: Chat }>result
-        } catch (err) {
-            this.logger?.error({ err }, 'Failed to get chats')
-
-            return null
-        }
+        return <{ [_: string]: Chat } | Chat | null>result
     }
 
     /**
      * Set chats
      */
-    private async set({ chats: newChats, isLatest }: { chats: Chat[]; isLatest: boolean }) {
+    private async set({ chats, isLatest }: { chats: Chat[]; isLatest: boolean }) {
         if (isLatest) {
             await this.clear()
         }
 
         const chain = this.redis.multi()
-        const oldChats = (await this.get()) ?? {}
+        const oldChats = <{ [_: string]: Chat }>await this.get() ?? {}
 
-        for (const chat of newChats) {
+        for (const chat of chats) {
             chain.json.set(this.key(), `.['${chat.id}']`, <RedisJSON>Object.assign(oldChats[chat.id] ?? {}, chat))
         }
 
         try {
             await chain.exec()
 
-            this.logger?.debug({ affectedChats: newChats.length }, 'Synced chats')
+            this.logger?.debug({ affectedChats: chats.length }, 'Synced chats')
         } catch (err) {
             this.logger?.error({ err }, 'Failed to set chats')
         }
@@ -96,10 +91,10 @@ class Chats extends Listener {
     /**
      * Upsert chats
      */
-    private async upsert(newChats: Chat[]) {
+    private async upsert(chats: Chat[]) {
         const chain = this.redis.multi()
 
-        for (const chat of newChats) {
+        for (const chat of chats) {
             chain.json.set(this.key(), `.['${chat.id}']`, <RedisJSON>chat)
         }
 
@@ -115,7 +110,7 @@ class Chats extends Listener {
      */
     private async update(updates: Partial<Chat>[]) {
         const chain = this.redis.multi()
-        const oldChats = (await this.get()) ?? {}
+        const oldChats = <{ [_: string]: Chat }>await this.get() ?? {}
 
         for (const update of updates) {
             if (!(update.id! in oldChats)) {
@@ -128,7 +123,7 @@ class Chats extends Listener {
                 update.unreadCount += oldChats[update.id!].unreadCount ?? 0
             }
 
-            chain.json.set(this.key(), `.['${update.id!}']`, <RedisJSON>Object.assign(oldChats[update.id!], update))
+            chain.json.set(this.key(), `.['${update.id}']`, <RedisJSON>Object.assign(oldChats[update.id!], update))
         }
 
         try {
